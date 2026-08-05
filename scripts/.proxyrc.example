@@ -1,0 +1,14 @@
+# Copy to .proxyrc (gitignored) and fill in. get-data.sh sources it
+# automatically, so you never have to export anything by hand.
+#
+# reports.nanpa.com sits behind Imperva, which refuses requests from a number
+# of countries outright with HTTP 403. A proxy in a permitted country is the
+# only way through; curl picks these variables up on its own.
+#
+# NEVER commit the real file. It holds credentials.
+
+export HTTPS_PROXY='http://USER:PASS@gw.example.com:8080'
+export HTTP_PROXY="$HTTPS_PROXY"
+
+# Hosts that must NOT go through the proxy.
+export NO_PROXY='localhost,127.0.0.1'

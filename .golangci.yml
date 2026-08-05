@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  go: '1.22'
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+
+linters-settings:
+  staticcheck:
+    checks: ["all"]
+
+issues:
+  exclude-dirs:
+    - _build
