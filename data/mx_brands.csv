@@ -1,0 +1,10 @@
+# legal_name,brand  -- display only, never affects classification.
+# IFT publishes the registered company; these are the trading names.
+# Verified by hand against the operator list, same discipline as ocn.csv.
+"RADIOMOVIL DIPSA, S.A. DE C.V.",Telcel
+"AT&T COMERCIALIZACION MOVIL, S. DE R.L. DE C.V.",AT&T Mexico
+"PEGASO PCS, S.A. DE C.V.",Movistar
+"ALTÁN REDES, S.A.P.I. DE C.V.",Altán Redes
+"TELEFONOS DE MEXICO, S.A.B. DE C.V.",Telmex
+"TELEFONOS DEL NOROESTE, S.A. DE C.V.",Telnor
+"TOTAL PLAY TELECOMUNICACIONES, S.A.P.I. DE C.V.",Totalplay

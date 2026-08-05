@@ -1,0 +1,18 @@
+# Build output
+/lti
+/ltbuild
+
+# Proxy credentials (NEVER commit)
+scripts/.proxyrc
+
+# Downloaded source data
+_build/
+
+# Test artifacts
+*.test
+*.prof
+
+# OS
+.DS_Store
+*~
+dist/
