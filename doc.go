@@ -3,11 +3,12 @@
 //
 // Use Line Type Intelligence to identify the carrier and phone line type —
 // mobile, landline, fixed VoIP, non-fixed VoIP, toll free, and more — with no
-// per-lookup API cost. All data is embedded in the binary at compile time from
-// published numbering-plan allocation data (NANPA, CNAC, IFT).
+// per-lookup API cost. Data is loaded at runtime from a Protocol Buffers file
+// built from published numbering-plan allocation data (NANPA, CNAC, IFT).
 //
 // # Quick start
 //
+//	linetype.SetDataPath("data/phone_data.pb") // optional; auto-resolved
 //	n := linetype.Describe("+18168037763")
 //	fmt.Println(n.Class)           // wireless
 //	fmt.Println(n.SMSReachable)    // true
@@ -16,7 +17,7 @@
 //
 // # Direct lookups
 //
-//	cls := linetype.Lookup("+14155551234")        // zero-alloc, 12 ns
+//	cls := linetype.Lookup("+14155551234")        // class only
 //	cr  := linetype.LookupCarrier("+14155551234") // carrier info
 //	rg  := linetype.LookupRegion("+14155551234")  // geographic region
 //

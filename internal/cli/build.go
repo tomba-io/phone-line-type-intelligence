@@ -11,13 +11,13 @@ import (
 var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build binary tables from source data",
-	Long: `Build the embedded binary tables from downloaded numbering-plan data.
+	Long: `Build the protobuf data file from downloaded numbering-plan data.
 This is a wrapper around the ltbuild command.
 
 Examples:
-  lti build -- -co cocodes.txt -blocks blocks.txt -ocn data/ocn.csv -out data/linetype.bin
+  lti build -- -co cocodes.txt -blocks blocks.txt -ocn data/ocn.csv -proto-out data/phone_data.pb
   lti build -- -inspect cocodes.txt
-  lti build -- -mx pnn.csv -mx-out data/mx.bin`,
+  lti build -- -co cocodes.txt -mx pnn.csv -proto-out data/phone_data.pb`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Find ltbuild binary or source

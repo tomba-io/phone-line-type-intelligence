@@ -8,7 +8,7 @@ mobile, landline, fixed VoIP, non-fixed VoIP, toll free, and more — with no
 per-lookup API cost.
 
 Classifies +1 (US, Canada) and +52 (Mexico) numbers from published
-numbering-plan allocation data embedded directly in the binary.
+numbering-plan allocation data stored as Protocol Buffers.
 
 ## Line Types
 
@@ -53,15 +53,15 @@ func main() {
 ### Direct Lookups
 
 ```go
-// Line type only (zero allocation, 11 ns)
+// Line type only (zero allocation, 12 ns)
 cls := linetype.Lookup("+14155551234") // linetype.Wireless
 
-// Carrier info (zero allocation, 60 ns)
+// Carrier info (zero allocation, 51 ns)
 cr := linetype.LookupCarrier("+14155551234")
 fmt.Println(cr.Label()) // "AT&T"
 fmt.Println(cr.OCN)     // "6006"
 
-// Geographic region (zero allocation, 12 ns)
+// Geographic region (zero allocation, 13 ns)
 rg := linetype.LookupRegion("+14155551234")
 fmt.Println(rg.Code, rg.Name) // "CA" "California"
 ```
@@ -142,7 +142,7 @@ $ lti audit --verbose
 $ lti fetch
 
 # Build tables
-$ lti build -- -co cocodes.txt -blocks blocks.txt -out data/linetype.bin
+$ lti build -- -co cocodes.txt -blocks blocks.txt -proto-out data/phone_data.pb
 
 # Shell completions
 $ lti completion bash > /etc/bash_completion.d/lti
@@ -185,30 +185,34 @@ Class distribution:
 | **Canada** | [CNAC](https://cnac.ca) CO codes + blocks                          | Derived from OCN category       | 100% of assigned blocks |
 | **Mexico** | [IFT](https://sns.ift.org.mx) Plan Nacional de Numeracion          | Published directly (Fijo/Movil) | 100% (1B+ numbers)      |
 
-## Embedded Tables
+## Data Format (Protocol Buffers)
 
-| Table          | Size     | Format                                                      |
-| -------------- | -------- | ----------------------------------------------------------- |
-| `linetype.bin` | 4 MB     | 4-bit class per thousands-block, 8M slots, O(1)             |
-| `carrier.bin`  | 4.5 MB   | NXX base + block exceptions (compact), O(1)/O(log n)        |
-| `carriers.csv` | 128 KB   | OCN to name and brand mapping                               |
-| `region.bin`   | 800 KB   | 1 byte per NXX, state/province                              |
-| `mx.bin`       | 3.5 MB   | Sorted ranges + 3-digit prefix index, O(log n)              |
+All lookup data is stored in a single `data/phone_data.pb` file (~16 MB), loaded
+at runtime from disk. The proto definition is at `proto/linetype/v1/linetype.proto`.
+
+| Table           | Format                                                            |
+| --------------- | ----------------------------------------------------------------- |
+| `ClassTable`    | 4 MB nibble-packed bytes, 4-bit class per block, O(1) lookup      |
+| `CarrierTable`  | NXX base bytes + sparse exceptions + carrier directory, O(log n)  |
+| `RegionTable`   | 800 KB byte index per NXX + region directory, O(1) lookup         |
+| `MXTable`       | Sorted ranges + 3-digit prefix index + carrier directory, O(log n)|
+
+Data path resolution: `SetDataPath()` > `LINETYPE_DATA_PATH` env > `<exe_dir>/data/phone_data.pb` > `./data/phone_data.pb`
 
 ## Performance
 
 All lookups are zero-allocation. Formatting methods (`International()`,
 `National()`) are computed lazily — you only pay for them when called.
 
-| Operation           | Time   | Allocations | Notes                                       |
-| ------------------- | ------ | ----------- | ------------------------------------------- |
-| `Lookup()`          | 11 ns  | 0           | Line type only, single array index          |
-| `LookupCarrier()`   | 60 ns  | 0           | NXX base + exception search (compact)       |
-| `LookupRegion()`    | 12 ns  | 0           | State/province per NXX                      |
-| `Describe()`        | 90 ns  | 0           | Full result: class + carrier + region       |
-| `Describe()` Mexico | 74 ns  | 0           | Binary search with 3-digit prefix index     |
-| Bulk (2377 numbers) | 585 us | 0           | 4 million classifications/sec               |
-| Parallel (6 cores)  | 17 ns  | 0           | No contention on concurrent access          |
+| Operation           | Time   | Allocations | Notes                                   |
+| ------------------- | ------ | ----------- | --------------------------------------- |
+| `Lookup()`          | 12 ns  | 0           | Line type only, single array index      |
+| `LookupCarrier()`   | 51 ns  | 0           | NXX base + exception search             |
+| `LookupRegion()`    | 13 ns  | 0           | State/province per NXX                  |
+| `Describe()`        | 84 ns  | 0           | Full result: class + carrier + region   |
+| `Describe()` Mexico | 62 ns  | 0           | Binary search with 3-digit prefix index |
+| Bulk (2377 numbers) | 543 us | 0           | 4.4 million classifications/sec         |
+| Parallel (6 cores)  | 15 ns  | 0           | No contention on concurrent access      |
 
 ## Tests
 
@@ -219,10 +223,10 @@ go test -fuzz=FuzzLookup -fuzztime=30s   # fuzz testing
 
 | Test                        | What it verifies                                                   |
 | --------------------------- | ------------------------------------------------------------------ |
-| `TestValidate`              | Embedded linetype.bin is exactly 4,000,000 bytes                   |
+| `TestValidate`              | Class table is exactly 4,000,000 bytes                             |
 | `TestCarrierAvailable`      | Carrier table loaded correctly                                     |
 | `TestRegionAvailable`       | Region table (800 KB) loaded correctly                             |
-| `TestMXAvailable`           | Mexico range table has valid MXPN magic header                     |
+| `TestMXAvailable`           | Mexico range table loaded correctly                                |
 | `TestLookupInvalid`         | 11 invalid inputs all return `Invalid` class                       |
 | `TestLookupPrefix`          | Out-of-range prefixes return `Unknown`                             |
 | `TestDescribeUSFormatting`  | NPA/NXX/Block parsing, International/National format               |
@@ -253,13 +257,13 @@ go test -bench=. -benchmem -count=3
 ```
 
 ```
-BenchmarkLookup-6           100000000    11.0 ns/op    0 B/op   0 allocs/op
-BenchmarkDescribe-6          13000000    90.1 ns/op    0 B/op   0 allocs/op
-BenchmarkDescribeMexico-6    16200000    74.4 ns/op    0 B/op   0 allocs/op
-BenchmarkLookupCarrier-6     20000000    59.6 ns/op    0 B/op   0 allocs/op
-BenchmarkLookupRegion-6     100000000    11.6 ns/op    0 B/op   0 allocs/op
-BenchmarkBulkThroughput-6        2156   585.2 us/op    0 B/op   0 allocs/op   2377 numbers/op
-BenchmarkParallel-6          62000000    17.0 ns/op    0 B/op   0 allocs/op
+BenchmarkLookup-6           100000000    12.1 ns/op    0 B/op   0 allocs/op
+BenchmarkDescribe-6          14000000    84.3 ns/op    0 B/op   0 allocs/op
+BenchmarkDescribeMexico-6    19200000    62.4 ns/op    0 B/op   0 allocs/op
+BenchmarkLookupCarrier-6     23000000    51.5 ns/op    0 B/op   0 allocs/op
+BenchmarkLookupRegion-6      91000000    13.1 ns/op    0 B/op   0 allocs/op
+BenchmarkBulkThroughput-6        2130   543.6 us/op    0 B/op   0 allocs/op   2377 numbers/op
+BenchmarkParallel-6          80000000    15.0 ns/op    0 B/op   0 allocs/op
 ```
 
 ## Building the Tables
@@ -275,14 +279,10 @@ make audit          # integrity check
 lti fetch
 lti build -- -co _build/linetype/CoCodeAssignment_*.txt \
     -blocks _build/linetype/ThousandsBlockAssignment_*.txt \
-    -ocn data/ocn.csv -out data/linetype.bin \
-    -carrier-out data/carrier.bin -carriers-out data/carriers.csv \
-    -region-out data/region.bin -regions-out data/regions.csv
-
-lti build -- -mx _build/linetype/pnn_Publico_*.csv \
-    -mx-out data/mx.bin -mx-carriers-out data/mx_carriers.csv
-
-go build ./...
+    -ocn data/ocn.csv \
+    -mx _build/linetype/pnn_Publico_*.csv \
+    -mx-brands data/mx_brands.csv \
+    -proto-out data/phone_data.pb
 ```
 
 ### Geographic Blocking (.proxyrc)

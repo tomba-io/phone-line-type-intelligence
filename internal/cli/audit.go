@@ -2,7 +2,6 @@ package cli
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,28 +52,28 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r := &auditReport{}
 
-		r.run("linetype.bin size", func() (bool, string) {
+		r.run("class table size", func() (bool, string) {
 			if err := linetype.Validate(); err != nil {
 				return false, err.Error()
 			}
 			return true, "4,000,000 bytes"
 		})
 
-		r.run("carrier.bin available", func() (bool, string) {
+		r.run("carrier table available", func() (bool, string) {
 			if !linetype.CarrierAvailable() {
 				return false, "missing or wrong size"
 			}
 			return true, "available"
 		})
 
-		r.run("region.bin available", func() (bool, string) {
+		r.run("region table available", func() (bool, string) {
 			if !linetype.RegionAvailable() {
 				return false, "missing or wrong size"
 			}
 			return true, "800,000 bytes"
 		})
 
-		r.run("mx.bin available", func() (bool, string) {
+		r.run("mx table available", func() (bool, string) {
 			if !linetype.MXAvailable() {
 				return false, "missing or invalid header"
 			}
@@ -128,26 +127,11 @@ Examples:
 			return true, fmt.Sprintf("all valid, %d NXXs with region", known)
 		})
 
-		r.run("mx.bin binary format", func() (bool, string) {
-			data, err := os.ReadFile("data/mx.bin")
-			if err != nil {
-				return true, "skipped (not readable)"
+		r.run("mx table loaded", func() (bool, string) {
+			if !linetype.MXAvailable() {
+				return true, "skipped (MX table not loaded)"
 			}
-			if len(data) < 12 || string(data[:4]) != "MXPN" {
-				return false, "bad magic"
-			}
-			count := binary.LittleEndian.Uint32(data[8:])
-			recordsEnd := 12 + int(count)*20
-			// Accept both: records only, or records + prefix index (MXIX).
-			hasIdx := len(data) > recordsEnd && len(data) >= recordsEnd+8 && string(data[recordsEnd:recordsEnd+4]) == "MXIX"
-			if len(data) != recordsEnd && !hasIdx {
-				return false, fmt.Sprintf("size %d, expected %d (or with index)", len(data), recordsEnd)
-			}
-			extra := ""
-			if hasIdx {
-				extra = " + prefix index"
-			}
-			return true, fmt.Sprintf("MXPN v%d, %d ranges%s", data[4], count, extra)
+			return true, "MX range table available"
 		})
 
 		r.run("input sanitisation", func() (bool, string) {
@@ -192,22 +176,17 @@ Examples:
 			return true, "100 goroutines, no panics"
 		})
 
-		r.run("data file checksums", func() (bool, string) {
-			files := []string{
-				"data/linetype.bin", "data/carrier.bin", "data/region.bin",
-				"data/mx.bin", "data/carriers.csv", "data/regions.csv", "data/mx_carriers.csv",
+		r.run("data file checksum", func() (bool, string) {
+			f := "data/phone_data.pb"
+			data, err := os.ReadFile(f)
+			if err != nil {
+				return false, fmt.Sprintf("cannot read %s: %v", f, err)
 			}
-			for _, f := range files {
-				data, err := os.ReadFile(f)
-				if err != nil {
-					return false, fmt.Sprintf("cannot read %s: %v", f, err)
-				}
-				if auditVerbose {
-					h := sha256.Sum256(data)
-					fmt.Printf("    %s  sha256:%x  (%d bytes)\n", f, h[:8], len(data))
-				}
+			if auditVerbose {
+				h := sha256.Sum256(data)
+				fmt.Printf("    %s  sha256:%x  (%d bytes)\n", f, h[:8], len(data))
 			}
-			return true, fmt.Sprintf("%d files hashed", len(files))
+			return true, fmt.Sprintf("%s hashed (%d bytes)", f, len(data))
 		})
 
 		r.run("coverage", func() (bool, string) {

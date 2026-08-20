@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package linetype.v1;
+
+option go_package =
+    "github.com/tomba-io/phone-line-type-intelligence"
+    "/proto/linetype/v1;linetypev1";
+
+// LineClass mirrors the Class enum in linetype.go.
+enum LineClass {
+  LINE_CLASS_UNSPECIFIED = 0;
+  LINE_CLASS_WIRELINE   = 1;
+  LINE_CLASS_WIRELESS   = 2;
+  LINE_CLASS_VOIP       = 3;
+  LINE_CLASS_TOLLFREE   = 4;
+  LINE_CLASS_INVALID    = 5;
+}
+
+// CarrierInfo identifies the company holding a number range.
+message CarrierInfo {
+  // Operating company number, e.g. "6529".
+  string ocn = 1;
+  // Published company name.
+  string name = 2;
+  // Optional human-facing brand.
+  string brand = 3;
+}
+
+// RegionInfo identifies the geography of a number range.
+message RegionInfo {
+  // State/province code, e.g. "MO", "ON".
+  string code = 1;
+  // ISO 3166-1 alpha-2, e.g. "US", "CA".
+  string country_code = 2;
+  // Full country name.
+  string country = 3;
+}
+
+// ClassTable holds nibble-packed US/CA line type data.
+// Index = (NPA*10000 + NXX*10 + Block) - 2000000.
+// Low nibble = even index, high nibble = odd index.
+message ClassTable {
+  // Exactly 4,000,000 bytes.
+  bytes data = 1;
+}
+
+// CarrierException is a block-level carrier override.
+message CarrierException {
+  // NXX offset from 200000 (0..799999).
+  uint32 nxx_offset = 1;
+  // Block digit 0-9.
+  uint32 block = 2;
+  // Index into CarrierTable.carriers.
+  uint32 carrier_index = 3;
+}
+
+// CarrierTable maps US/CA blocks to their holding carrier.
+// Uses NXX-base plus sparse exceptions.
+message CarrierTable {
+  // 1,600,000 bytes; uint16 LE per NXX.
+  bytes nxx_base = 1;
+  // Sorted by (nxx_offset*10 + block).
+  repeated CarrierException exceptions = 2;
+  // Index 0 = unknown/no carrier on file.
+  repeated CarrierInfo carriers = 3;
+}
+
+// RegionTable maps US/CA NXXs to their geographic region.
+message RegionTable {
+  // 800,000 bytes; 1 byte per NXX.
+  bytes nxx_index = 1;
+  // Index 0 = unknown/no region on file.
+  repeated RegionInfo regions = 2;
+}
+
+// MXRange is a single Mexico number range.
+message MXRange {
+  // First number, e.g. 5512340000.
+  fixed64 start = 1;
+  // Last number, inclusive.
+  fixed64 end = 2;
+  // Line class for this range.
+  LineClass line_class = 3;
+  // Index into MXTable.carriers.
+  uint32 carrier_index = 4;
+}
+
+// MXBucket narrows binary search to a 3-digit prefix.
+message MXBucket {
+  // First range index for this prefix.
+  uint32 start_index = 1;
+  // One past last range index.
+  uint32 end_index = 2;
+}
+
+// MXTable holds Mexico (+52) range data with prefix index.
+message MXTable {
+  // Sorted by start.
+  repeated MXRange ranges = 1;
+  // 800 buckets for prefixes 200..999.
+  repeated MXBucket prefix_indices = 2;
+  // Index 0 = unknown.
+  repeated CarrierInfo carriers = 3;
+}
+
+// PhoneData is the top-level container for all lookup tables.
+// Serialized as a single file (e.g. data/phone_data.pb).
+message PhoneData {
+  ClassTable class_table = 1;
+  CarrierTable carrier_table = 2;
+  RegionTable region_table = 3;
+  MXTable mx_table = 4;
+
+  // RFC 3339 build timestamp.
+  string build_date = 10;
+  // Data format version.
+  string version = 11;
+}

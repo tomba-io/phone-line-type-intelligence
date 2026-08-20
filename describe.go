@@ -70,6 +70,7 @@ func (n Number) National() string {
 // pass. Formatting strings (International, National) are computed lazily via
 // methods to keep the hot path zero-allocation.
 func Describe(e164 string) Number {
+	ensureLoaded()
 	n := Number{E164: e164}
 
 	if mx, ok := mxNumber(e164); ok {

@@ -4,7 +4,7 @@
 //
 //	lti classify list.txt
 //	lti describe +18168037763
-//	lti build -co cocodes.txt -blocks blocks.txt -ocn ocn.csv -out data/linetype.bin
+//	lti build -- -co cocodes.txt -blocks blocks.txt -ocn ocn.csv -proto-out data/phone_data.pb
 //	lti audit --verbose
 //	lti version
 package main

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -9,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	linetypev1 "github.com/tomba-io/phone-line-type-intelligence/proto/linetype/v1"
 )
 
 // Mexico uses a RANGE table, not a block table.
@@ -21,36 +22,13 @@ import (
 //
 // Sorted ranges with a binary search are both exact and smaller than the block
 // table would have been: ~3.4 MB against 4 MB, with no rounding at all.
-//
-// File layout, little-endian throughout:
-//
-//	magic   "MXPN"   4 bytes
-//	version uint16   2
-//	_       uint16   2   reserved, must be zero
-//	count   uint32   4
-//	then count records of 20 bytes:
-//	  start   uint64  8   first number in the range, e.g. 5512340000
-//	  end     uint64  8   last number, inclusive
-//	  class   uint8   1   mirrors linetype.Class
-//	  carrier uint16  2   index into the MX carrier table, 0 = none
-//	  _       uint8   1   reserved
+
 const (
-	mxMagic      = "MXPN"
-	mxVersion    = 1
-	mxHeaderLen  = 12
-	mxRecordSize = 20
+	mxBucketCount = 800 // 3-digit prefixes 200..999
+	mxBucketBase  = 200
 )
 
 // mxModalidad maps IFT's service modality to a line class.
-//
-//	CPP  "Calling Party Pays"  - mobile; the caller pays, the standard mobile
-//	                             modality since Mexico retired the 044/045
-//	                             dialling prefixes in 2019.
-//	MPP  "Mobile Party Pays"   - also mobile; the subscriber pays for incoming.
-//	FIJO                       - fixed line.
-//
-// Anything else is left unclassified rather than guessed, exactly as an
-// unmapped OCN is on the NANPA side.
 var mxModalidad = map[string]byte{
 	"CPP":  cWireless,
 	"MPP":  cWireless,
@@ -91,35 +69,11 @@ func (o *mxOperators) intern(name string) (uint16, error) {
 	return i, nil
 }
 
-func (o *mxOperators) writeTable(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("mx carrier table: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	if err := w.Write([]string{"index", "ocn", "name", "brand"}); err != nil {
-		return fmt.Errorf("mx carrier table: %w", err)
-	}
-	for i := 1; i < len(o.names); i++ {
-		// IFT publishes no OCN, so that column stays empty rather than being
-		// filled with something invented.
-		if err := w.Write([]string{fmt.Sprint(i), "", o.names[i], mxBrand[o.names[i]]}); err != nil {
-			return fmt.Errorf("mx carrier table: %w", err)
-		}
-	}
-	w.Flush()
-	return w.Error()
-}
-
 // mxBrand is populated from the -mx-brands file, if one is supplied.
 var mxBrand = map[string]string{}
 
 // loadMXBrands reads an optional csv of `legal_name,brand`, letting the
-// operator's trading name be shown instead of the registered company. Same
-// contract as the brand column in ocn.csv: display only, never inferred.
+// operator's trading name be shown instead of the registered company.
 func loadMXBrands(path string) error {
 	if path == "" {
 		return nil
@@ -217,8 +171,6 @@ func buildMX(path string, ops *mxOperators) ([]mxRange, map[string]int, error) {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].start < out[j].start })
 
-	// Overlaps would make a binary search ambiguous. The published data has
-	// none; if that ever changes, say so rather than silently picking one.
 	for i := 1; i < len(out); i++ {
 		if out[i].start <= out[i-1].end {
 			return nil, nil, fmt.Errorf("%s: ranges %d-%d and %d-%d overlap; "+
@@ -229,69 +181,55 @@ func buildMX(path string, ops *mxOperators) ([]mxRange, map[string]int, error) {
 	return out, skipped, nil
 }
 
-const (
-	mxIdxMagic    = "MXIX"
-	mxIdxHdrLen   = 8   // magic(4) + bucketCount(2) + reserved(2)
-	mxBucketSize  = 8   // startIdx(4) + endIdx(4)
-	mxBucketCount = 800 // 3-digit prefixes 200..999
-	mxBucketBase  = 200
-)
-
-func writeMXBlob(ranges []mxRange, path string) error {
-	recordsLen := len(ranges) * mxRecordSize
-	idxLen := mxIdxHdrLen + mxBucketCount*mxBucketSize
-	buf := make([]byte, mxHeaderLen+recordsLen+idxLen)
-
-	// Header.
-	copy(buf, mxMagic)
-	binary.LittleEndian.PutUint16(buf[4:], mxVersion)
-	binary.LittleEndian.PutUint32(buf[8:], uint32(len(ranges)))
-
-	// Records.
+// mxToProto builds an MXTable protobuf from the in-memory MX data.
+func mxToProto(ranges []mxRange, ops *mxOperators) *linetypev1.MXTable {
+	pbRanges := make([]*linetypev1.MXRange, len(ranges))
 	for i, r := range ranges {
-		o := mxHeaderLen + i*mxRecordSize
-		binary.LittleEndian.PutUint64(buf[o:], r.start)
-		binary.LittleEndian.PutUint64(buf[o+8:], r.end)
-		buf[o+16] = r.class
-		binary.LittleEndian.PutUint16(buf[o+17:], r.carrier)
+		pbRanges[i] = &linetypev1.MXRange{
+			Start:        r.start,
+			End:          r.end,
+			LineClass:    linetypev1.LineClass(r.class),
+			CarrierIndex: uint32(r.carrier),
+		}
 	}
 
-	// Prefix index: bucket per 3-digit prefix (200..999).
-	idxOff := mxHeaderLen + recordsLen
-	copy(buf[idxOff:], mxIdxMagic)
-	binary.LittleEndian.PutUint16(buf[idxOff+4:], mxBucketCount)
-	// reserved 2 bytes already zero
-
-	// Compute bucket boundaries. Ranges are sorted by start.
-	var buckets [mxBucketCount][2]uint32 // [startIdx, endIdx)
+	// Build prefix index.
+	pbBuckets := make([]*linetypev1.MXBucket, mxBucketCount)
 	ri := 0
 	for b := 0; b < mxBucketCount; b++ {
 		prefix := uint64(b+mxBucketBase) * 10_000_000
 		nextPrefix := prefix + 10_000_000
-		// Advance to first range that could overlap this prefix.
 		for ri < len(ranges) && ranges[ri].end < prefix {
 			ri++
 		}
-		buckets[b][0] = uint32(ri)
-		// Find end: first range whose start >= nextPrefix.
+		startIdx := uint32(ri)
 		ei := ri
 		for ei < len(ranges) && ranges[ei].start < nextPrefix {
 			ei++
 		}
-		buckets[b][1] = uint32(ei)
+		pbBuckets[b] = &linetypev1.MXBucket{
+			StartIndex: startIdx,
+			EndIndex:   uint32(ei),
+		}
 	}
 
-	off := idxOff + mxIdxHdrLen
-	for _, bucket := range buckets {
-		binary.LittleEndian.PutUint32(buf[off:], bucket[0])
-		binary.LittleEndian.PutUint32(buf[off+4:], bucket[1])
-		off += mxBucketSize
+	// Build carrier directory.
+	pbCarriers := make([]*linetypev1.CarrierInfo, len(ops.names))
+	for i := range ops.names {
+		pbCarriers[i] = &linetypev1.CarrierInfo{
+			Name:  ops.names[i],
+			Brand: mxBrand[ops.names[i]],
+		}
+	}
+	if len(pbCarriers) > 0 {
+		pbCarriers[0] = &linetypev1.CarrierInfo{}
 	}
 
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		return fmt.Errorf("mx blob: %w", err)
+	return &linetypev1.MXTable{
+		Ranges:      pbRanges,
+		PrefixIndices: pbBuckets,
+		Carriers:    pbCarriers,
 	}
-	return nil
 }
 
 func reportMX(ranges []mxRange, ops *mxOperators, skipped map[string]int) {

@@ -5,7 +5,7 @@
 // as mobile, landline, fixed VoIP, non-fixed VoIP, toll free, and more — with
 // no per-lookup API cost.
 //
-// All data is embedded in the binary at compile time from published
+// Data is loaded at runtime from a Protocol Buffers file built from published
 // numbering-plan allocation data (NANPA, CNAC, IFT).
 //
 // IMPORTANT SCOPE LIMIT: this package reflects *block assignment*, i.e. which
@@ -14,7 +14,6 @@
 package linetype
 
 import (
-	_ "embed"
 	"errors"
 	"fmt"
 )
@@ -59,17 +58,18 @@ const (
 	blobLen  = keyCount / 2         // 4,000,000 bytes
 )
 
-//go:embed data/linetype.bin
-var blob []byte
+// ErrBlobSize is returned by Validate if the class table is the wrong size.
+var ErrBlobSize = errors.New("linetype: class table has unexpected size")
 
-// ErrBlobSize is returned by Validate if the embedded table is the wrong size.
-var ErrBlobSize = errors.New("linetype: embedded table has unexpected size")
-
-// Validate checks the embedded table at startup. Call it in main; a truncated
-// or stale blob is a deploy error, not a per-request condition.
+// Validate checks the class table. Call it in main; a truncated or stale table
+// is a deploy error, not a per-request condition.
 func Validate() error {
-	if len(blob) != blobLen {
-		return fmt.Errorf("%w: got %d bytes, want %d", ErrBlobSize, len(blob), blobLen)
+	ensureLoaded()
+	if loadErr != nil {
+		return loadErr
+	}
+	if len(classData) != blobLen {
+		return fmt.Errorf("%w: got %d bytes, want %d", ErrBlobSize, len(classData), blobLen)
 	}
 	return nil
 }
@@ -96,8 +96,9 @@ func prefixKey(e164 string) (uint32, bool) {
 }
 
 // Lookup returns the assignment-derived class of an E.164 +1 number.
-// It is safe for concurrent use and performs no allocation.
+// It is safe for concurrent use.
 func Lookup(e164 string) Class {
+	ensureLoaded()
 	k, ok := prefixKey(e164)
 	if !ok {
 		return Invalid
@@ -108,11 +109,12 @@ func Lookup(e164 string) Class {
 // LookupPrefix returns the class for an already-extracted seven-digit
 // NPA-NXX-B prefix.
 func LookupPrefix(prefix uint32) Class {
-	if prefix < keyBase || prefix >= 10_000_000 || len(blob) != blobLen {
+	ensureLoaded()
+	if prefix < keyBase || prefix >= 10_000_000 || len(classData) != blobLen {
 		return Unknown
 	}
 	i := prefix - keyBase
-	b := blob[i>>1]
+	b := classData[i>>1]
 	if i&1 == 0 {
 		return Class(b & 0x0f)
 	}
@@ -121,11 +123,11 @@ func LookupPrefix(prefix uint32) Class {
 
 // classAt is the shared body of Lookup and Describe.
 func classAt(k uint32) Class {
-	if len(blob) != blobLen {
+	if len(classData) != blobLen {
 		return Unknown
 	}
 	i := k - keyBase
-	b := blob[i>>1]
+	b := classData[i>>1]
 	if i&1 == 0 {
 		return Class(b & 0x0f)
 	}

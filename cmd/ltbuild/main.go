@@ -6,7 +6,7 @@
 //	    Print the detected header row and exit. Run this FIRST — the column
 //	    layout of the published files changes, and this tool refuses to guess.
 //
-//	ltbuild -co cocus.txt -blocks blocks.txt -ocn ocn.csv -out data/linetype.bin
+//	ltbuild -co cocus.txt -blocks blocks.txt -ocn ocn.csv -proto-out data/phone_data.pb
 //
 // Precedence: thousands-block assignments override NXX-level assignments,
 // because in a pooled rate centre a single NXX is split across up to ten
@@ -23,6 +23,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	linetypev1 "github.com/tomba-io/phone-line-type-intelligence/proto/linetype/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -108,17 +112,9 @@ func main() {
 	coPath := flag.String("co", "", "central office code assignment file(s), comma-separated (US NANPA and/or Canadian CNAC)")
 	blockPath := flag.String("blocks", "", "thousands-block assignment file(s), comma-separated (optional but strongly recommended)")
 	ocnPath := flag.String("ocn", "ocn.csv", "OCN classification map (csv: ocn,class)")
-	outPath := flag.String("out", "data/linetype.bin", "output class blob path")
-	// Both default to empty: writing a 16 MB file the caller did not ask for
-	// would clobber a good table during an unrelated build or test run.
-	carrierPath := flag.String("carrier-out", "", "write the carrier-index blob here (16 MB); off by default")
-	tablePath := flag.String("carriers-out", "", "write the carrier index->OCN,name table here; off by default")
-	regionPath := flag.String("region-out", "", "write the per-NXX region blob here (800 KB); off by default")
-	regionTablePath := flag.String("regions-out", "", "write the region index->code,country table here; off by default")
 	mxPath := flag.String("mx", "", "IFT Plan Nacional de Numeracion CSV (Mexico, +52)")
-	mxOut := flag.String("mx-out", "", "write the Mexican range table here; off by default")
-	mxCarriersOut := flag.String("mx-carriers-out", "", "write the Mexican operator table here; off by default")
 	mxBrands := flag.String("mx-brands", "", "optional csv of legal_name,brand for Mexican operators")
+	protoOut := flag.String("proto-out", "data/phone_data.pb", "write combined protobuf data file here")
 	worklistPath := flag.String("worklist-out", "", "write the ranked unmapped-OCN worklist here; off by default")
 	report := flag.Bool("report", true, "print coverage and unmapped-OCN report to stderr")
 	flag.Parse()
@@ -129,26 +125,18 @@ func main() {
 		}
 		return
 	}
+	var ranges []mxRange
+	var ops *mxOperators
 	if *mxPath != "" {
 		if err := loadMXBrands(*mxBrands); err != nil {
 			die(err)
 		}
-		ops := newMXOperators()
-		ranges, skipped, err := buildMX(*mxPath, ops)
+		ops = newMXOperators()
+		var skipped map[string]int
+		var err error
+		ranges, skipped, err = buildMX(*mxPath, ops)
 		if err != nil {
 			die(err)
-		}
-		if *mxOut != "" {
-			if err := writeMXBlob(ranges, *mxOut); err != nil {
-				die(err)
-			}
-			fmt.Fprintf(os.Stderr, "wrote %s (%d ranges, %d KB)\n",
-				*mxOut, len(ranges), (mxHeaderLen+len(ranges)*mxRecordSize)/1000)
-		}
-		if *mxCarriersOut != "" {
-			if err := ops.writeTable(*mxCarriersOut); err != nil {
-				die(err)
-			}
 		}
 		if *report {
 			reportMX(ranges, ops, skipped)
@@ -200,33 +188,10 @@ func main() {
 			"dominant error source in dense metros.")
 	}
 
-	if err := writeBlob(table, *outPath); err != nil {
+	if err := writeProto(table, carrier, reg, region, rreg, ranges, ops, *protoOut); err != nil {
 		die(err)
 	}
-	if *carrierPath != "" {
-		if err := reg.writeBlob(carrier, *carrierPath); err != nil {
-			die(err)
-		}
-		fmt.Fprintf(os.Stderr, "wrote %s (%d distinct carriers)\n",
-			*carrierPath, len(reg.ocns)-1)
-	}
-	if *tablePath != "" {
-		if err := reg.writeTable(*tablePath); err != nil {
-			die(err)
-		}
-	}
-	if *regionPath != "" {
-		if err := rreg.writeBlob(region, *regionPath); err != nil {
-			die(err)
-		}
-		fmt.Fprintf(os.Stderr, "wrote %s (%d KB, %d distinct regions)\n",
-			*regionPath, regionCnt/1000, len(rreg.codes)-1)
-	}
-	if *regionTablePath != "" {
-		if err := rreg.writeTable(*regionTablePath); err != nil {
-			die(err)
-		}
-	}
+	fmt.Fprintf(os.Stderr, "wrote %s\n", *protoOut)
 
 	if *worklistPath != "" {
 		if err := reg.writeWorklist(carrier, ocn, *worklistPath); err != nil {
@@ -519,16 +484,6 @@ func loadOCN(path string) (map[string]byte, error) {
 	return out, nil
 }
 
-func writeBlob(table []byte, path string) error {
-	packed := make([]byte, blobLen)
-	for i := 0; i < keyCnt; i += 2 {
-		lo := table[i] & 0x0f
-		hi := table[i+1] & 0x0f
-		packed[i>>1] = lo | hi<<4
-	}
-	return os.WriteFile(path, packed, 0o644)
-}
-
 func printReport(table []byte, unmapped map[string]int) {
 	counts := map[byte]int{}
 	for _, c := range table {
@@ -590,7 +545,45 @@ func printCarrierWorklist(carrier []uint16, reg *carrierRegistry, classOf map[st
 			c.OCN, c.Blocks, 100*float64(run)/float64(max(totalUnmapped, 1)), name)
 	}
 	if len(costs) > show {
-		fmt.Fprintf(os.Stderr, "  ... and %d more. The full list with company names is in the\n"+
-			"  carriers table written by -carriers-out.\n", len(costs)-show)
+		fmt.Fprintf(os.Stderr, "  ... and %d more. Use -worklist-out to get the full list.\n",
+			len(costs)-show)
 	}
+}
+
+// writeProto builds a PhoneData protobuf and writes it to path.
+func writeProto(table []byte, carrier []uint16, reg *carrierRegistry,
+	region []uint8, rreg *regionRegistry,
+	mxRanges []mxRange, mxOps *mxOperators, path string) error {
+
+	pd := &linetypev1.PhoneData{
+		ClassTable:   buildClassTableProto(table),
+		CarrierTable: reg.toProto(carrier),
+		RegionTable:  rreg.toProto(region),
+		BuildDate:    time.Now().UTC().Format(time.RFC3339),
+		Version:      "1",
+	}
+	if mxOps != nil {
+		pd.MxTable = mxToProto(mxRanges, mxOps)
+	}
+
+	data, err := proto.Marshal(pd)
+	if err != nil {
+		return fmt.Errorf("proto marshal: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("proto write: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "  proto: %d KB\n", len(data)/1024)
+	return nil
+}
+
+// buildClassTableProto packs the per-key class table into nibbles.
+func buildClassTableProto(table []byte) *linetypev1.ClassTable {
+	packed := make([]byte, blobLen)
+	for i := 0; i < keyCnt; i += 2 {
+		lo := table[i] & 0x0f
+		hi := table[i+1] & 0x0f
+		packed[i>>1] = lo | hi<<4
+	}
+	return &linetypev1.ClassTable{Data: packed}
 }

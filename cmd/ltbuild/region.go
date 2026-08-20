@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
-	"os"
 	"strings"
+
+	linetypev1 "github.com/tomba-io/phone-line-type-intelligence/proto/linetype/v1"
 )
 
 // Region data is keyed per NXX, not per block.
@@ -58,40 +58,27 @@ func (r *regionRegistry) intern(code string) (uint8, error) {
 	return i, nil
 }
 
-func (r *regionRegistry) writeBlob(region []uint8, path string) error {
-	if len(region) != regionCnt {
-		return fmt.Errorf("region table has %d slots, want %d", len(region), regionCnt)
-	}
-	if err := os.WriteFile(path, region, 0o644); err != nil {
-		return fmt.Errorf("region blob: %w", err)
-	}
-	return nil
-}
-
-// writeTable emits index -> code, country, country_code. The country is
-// derived from the region code, not from which file the row came from, so a
-// Canadian row appearing in a US file (or vice versa) still lands correctly.
-func (r *regionRegistry) writeTable(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("region table: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	if err := w.Write([]string{"index", "region", "country_code", "country"}); err != nil {
-		return fmt.Errorf("region table: %w", err)
-	}
-	for i := 1; i < len(r.codes); i++ {
+// toProto builds a RegionTable protobuf from the in-memory region data.
+func (r *regionRegistry) toProto(region []uint8) *linetypev1.RegionTable {
+	regions := make([]*linetypev1.RegionInfo, len(r.codes))
+	for i := range r.codes {
 		cc, country := "US", "United States"
-		if canadianProvinces[r.codes[i]] {
+		if i > 0 && canadianProvinces[r.codes[i]] {
 			cc, country = "CA", "Canada"
 		}
-		if err := w.Write([]string{fmt.Sprint(i), r.codes[i], cc, country}); err != nil {
-			return fmt.Errorf("region table: %w", err)
+		regions[i] = &linetypev1.RegionInfo{
+			Code:        r.codes[i],
+			CountryCode: cc,
+			Country:     country,
 		}
 	}
-	w.Flush()
-	return w.Error()
+	// Index 0 is the sentinel — empty code means "no region on file".
+	if len(regions) > 0 {
+		regions[0] = &linetypev1.RegionInfo{}
+	}
+
+	return &linetypev1.RegionTable{
+		NxxIndex: region,
+		Regions:  regions,
+	}
 }
